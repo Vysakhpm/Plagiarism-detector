@@ -1,7 +1,25 @@
 import { jwtDecode } from "jwt-decode"
+import {
+  buildDemoUser,
+  clearDemoUser,
+  getDemoState,
+  getDemoUser,
+  nextId,
+  setDemoUser,
+  updateDemoState,
+} from "@/lib/demo-store"
 
 // API configuration
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+const getDefaultApiUrl = () => {
+  if (typeof window !== "undefined") {
+    const { protocol, hostname } = window.location
+    return `${protocol}//${hostname}:8000`
+  }
+  return "http://localhost:8000"
+}
+
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "").trim() || getDefaultApiUrl()
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true"
 
 // Token management
 const getTokens = () => {
@@ -21,6 +39,7 @@ const clearTokens = () => {
 
 // Check if token is expired
 const isTokenExpired = (token: string) => {
+  if (DEMO_MODE) return false
   try {
     const decoded: any = jwtDecode(token)
     return decoded.exp * 1000 < Date.now()
@@ -31,6 +50,9 @@ const isTokenExpired = (token: string) => {
 
 // Refresh the access token
 const refreshAccessToken = async () => {
+  if (DEMO_MODE) {
+    throw new Error("Token refresh is disabled in demo mode")
+  }
   const tokens = getTokens()
   if (!tokens) throw new Error("No refresh token available")
 
@@ -56,6 +78,9 @@ const refreshAccessToken = async () => {
 
 // API client with authentication
 const apiClient = async (endpoint: string, options: RequestInit = {}) => {
+  if (DEMO_MODE) {
+    throw new Error("API client is disabled in demo mode")
+  }
   let tokens = getTokens()
 
   // If we have tokens and the access token is expired, try to refresh it
@@ -96,9 +121,69 @@ const apiClient = async (endpoint: string, options: RequestInit = {}) => {
   return response
 }
 
+const createDemoUserFromLogin = (email: string) => {
+  const safeEmail = (email || "").trim() || "demo@plagiarismdetect.app"
+  const username = safeEmail.split("@")[0] || "demo"
+  const displayName = username
+    .replace(/[^a-zA-Z0-9]/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+  const [firstName, ...rest] = displayName.split(" ")
+  const lastName = rest.join(" ").trim()
+
+  return buildDemoUser({
+    email: safeEmail,
+    username,
+    first_name: firstName || "Demo",
+    last_name: lastName || "User",
+    is_teacher: true,
+  })
+}
+
+const getDemoCourseName = (courseId: number, fallback = "General Studies") => {
+  const state = getDemoState()
+  const course = state.courses.find((item) => item.id === courseId)
+  if (!course) return fallback
+  return `${course.code} - ${course.name}`
+}
+
+const randomScore = (min = 8, max = 78) => {
+  const value = Math.random() * (max - min) + min
+  return Math.round(value * 10) / 10
+}
+
+const buildMatches = (overallScore: number) => {
+  const sources = [
+    { name: "Open Knowledge Library", url: "https://example.com/knowledge-library" },
+    { name: "Student Submission Archive", url: null },
+    { name: "Academic Journal Index", url: "https://example.com/journal-index" },
+    { name: "Institutional Repository", url: "https://example.com/repository" },
+  ]
+
+  const matchCount = overallScore > 55 ? 3 : overallScore > 30 ? 2 : 1
+  return sources.slice(0, matchCount).map((source, index) => ({
+    id: index + 1,
+    source_name: source.name,
+    source_url: source.url,
+    similarity_score: Math.max(3, Math.round((overallScore / matchCount) * 10) / 10),
+  }))
+}
+
+const readFormValue = (formData: FormData, key: string) => {
+  const value = formData.get(key)
+  return typeof value === "string" ? value : ""
+}
+
 // Authentication API
 export const authAPI = {
   login: async (email: string, password: string) => {
+    if (DEMO_MODE) {
+      const user = createDemoUserFromLogin(email)
+      setDemoUser(user)
+      return { access: "demo", refresh: "demo" }
+    }
     const response = await fetch(`${API_URL}/auth/jwt/create/`, {
       method: "POST",
       headers: {
@@ -118,6 +203,19 @@ export const authAPI = {
   },
 
   register: async (userData: any) => {
+    if (DEMO_MODE) {
+      const user = buildDemoUser({
+        email: userData?.email || "demo@plagiarismdetect.app",
+        username: userData?.username || "demo",
+        first_name: userData?.first_name || "Demo",
+        last_name: userData?.last_name || "User",
+        institution: userData?.institution || "Crescent University",
+        department: userData?.department || "Research Integrity",
+        is_teacher: !!userData?.is_teacher,
+      })
+      setDemoUser(user)
+      return user
+    }
     const response = await fetch(`${API_URL}/auth/users/`, {
       method: "POST",
       headers: {
@@ -135,10 +233,19 @@ export const authAPI = {
   },
 
   logout: () => {
+    if (DEMO_MODE) {
+      clearDemoUser()
+      return
+    }
     clearTokens()
   },
 
   getCurrentUser: async () => {
+    if (DEMO_MODE) {
+      const user = getDemoUser()
+      if (!user) throw new Error("No demo user")
+      return user
+    }
     const response = await apiClient("/api/profile/")
 
     if (!response.ok) {
@@ -149,6 +256,13 @@ export const authAPI = {
   },
 
   updateCurrentUser: async (userData: any) => {
+    if (DEMO_MODE) {
+      const current = getDemoUser()
+      if (!current) throw new Error("No demo user")
+      const updated = { ...current, ...userData }
+      setDemoUser(updated)
+      return updated
+    }
     const response = await apiClient("/api/profile/", {
       method: "PATCH",
       body: JSON.stringify(userData),
@@ -163,6 +277,9 @@ export const authAPI = {
   },
 
   isAuthenticated: () => {
+    if (DEMO_MODE) {
+      return !!getDemoUser()
+    }
     const tokens = getTokens()
     return !!tokens && !isTokenExpired(tokens.access)
   },
@@ -171,6 +288,10 @@ export const authAPI = {
 // Courses API
 export const coursesAPI = {
   getCourses: async () => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      return state.courses
+    }
     const response = await apiClient("/api/courses/")
 
     if (!response.ok) {
@@ -181,6 +302,12 @@ export const coursesAPI = {
   },
 
   getCourse: async (id: number) => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      const course = state.courses.find((item) => item.id === id)
+      if (!course) throw new Error("Course not found")
+      return course
+    }
     const response = await apiClient(`/api/courses/${id}/`)
 
     if (!response.ok) {
@@ -191,6 +318,22 @@ export const coursesAPI = {
   },
 
   createCourse: async (courseData: any) => {
+    if (DEMO_MODE) {
+      let createdCourse: any = null
+      updateDemoState((state) => {
+        const id = nextId(state, "course")
+        createdCourse = {
+          id,
+          name: courseData?.name || "Untitled Course",
+          code: courseData?.code || `COURSE-${id}`,
+          description: courseData?.description || "",
+          teacher_name: "Dr. Mira Patel",
+        }
+        state.courses = [createdCourse, ...state.courses]
+        return state
+      })
+      return createdCourse
+    }
     const response = await apiClient("/api/courses/", {
       method: "POST",
       body: JSON.stringify(courseData),
@@ -209,6 +352,20 @@ export const coursesAPI = {
   },
 
   updateCourse: async (id: number, courseData: any) => {
+    if (DEMO_MODE) {
+      let updatedCourse: any = null
+      updateDemoState((state) => {
+        const index = state.courses.findIndex((item) => item.id === id)
+        if (index === -1) throw new Error("Course not found")
+        updatedCourse = {
+          ...state.courses[index],
+          ...courseData,
+        }
+        state.courses[index] = updatedCourse
+        return state
+      })
+      return updatedCourse
+    }
     const response = await apiClient(`/api/courses/${id}/`, {
       method: "PATCH",
       body: JSON.stringify(courseData),
@@ -227,6 +384,13 @@ export const coursesAPI = {
   },
 
   deleteCourse: async (id: number) => {
+    if (DEMO_MODE) {
+      updateDemoState((state) => {
+        state.courses = state.courses.filter((course) => course.id !== id)
+        return state
+      })
+      return true
+    }
     const response = await apiClient(`/api/courses/${id}/`, {
       method: "DELETE",
     })
@@ -242,6 +406,10 @@ export const coursesAPI = {
 // Assignments API
 export const assignmentsAPI = {
   getAssignments: async () => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      return state.assignments
+    }
     const response = await apiClient("/api/assignments/")
 
     if (!response.ok) {
@@ -252,6 +420,12 @@ export const assignmentsAPI = {
   },
 
   getAssignment: async (id: number) => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      const assignment = state.assignments.find((item) => item.id === id)
+      if (!assignment) throw new Error("Assignment not found")
+      return assignment
+    }
     const response = await apiClient(`/api/assignments/${id}/`)
 
     if (!response.ok) {
@@ -262,6 +436,35 @@ export const assignmentsAPI = {
   },
 
   uploadAssignment: async (assignmentData: FormData) => {
+    if (DEMO_MODE) {
+      let createdAssignment: any = null
+      updateDemoState((state) => {
+        const id = nextId(state, "assignment")
+        const title = readFormValue(assignmentData, "title") || "Untitled Assignment"
+        const courseId = Number(readFormValue(assignmentData, "course")) || 0
+        const file = assignmentData.get("file") as File | null
+        const createdAt = new Date().toISOString()
+
+        createdAssignment = {
+          id,
+          title,
+          course_id: courseId,
+          course_name: getDemoCourseName(courseId),
+          student_name: readFormValue(assignmentData, "student_name"),
+          student_id: readFormValue(assignmentData, "student_id"),
+          submission_date: readFormValue(assignmentData, "submission_date") || null,
+          created_at: createdAt,
+          plagiarism_results: [],
+          file_name: file?.name || "",
+          file_type: file?.type || "",
+          file_size: file?.size || 0,
+        }
+
+        state.assignments = [createdAssignment, ...state.assignments]
+        return state
+      })
+      return createdAssignment
+    }
     const response = await apiClient("/api/assignments/", {
       method: "POST",
       body: assignmentData,
@@ -276,6 +479,14 @@ export const assignmentsAPI = {
   },
 
   deleteAssignment: async (id: number) => {
+    if (DEMO_MODE) {
+      updateDemoState((state) => {
+        state.assignments = state.assignments.filter((assignment) => assignment.id !== id)
+        state.results = state.results.filter((result) => result.assignment.id !== id)
+        return state
+      })
+      return true
+    }
     const response = await apiClient(`/api/assignments/${id}/`, {
       method: "DELETE",
     })
@@ -291,6 +502,39 @@ export const assignmentsAPI = {
 // Plagiarism API
 export const plagiarismAPI = {
   checkPlagiarism: async (assignmentId: number, options = { compareWithCourse: true, compareWithAll: false }) => {
+    if (DEMO_MODE) {
+      let createdResult: any = null
+      updateDemoState((state) => {
+        const assignment = state.assignments.find((item) => item.id === assignmentId)
+        if (!assignment) throw new Error("Assignment not found")
+
+        const overallScore = randomScore()
+        const matches = buildMatches(overallScore)
+        const processedAt = new Date().toISOString()
+        const resultId = nextId(state, "result")
+
+        createdResult = {
+          id: resultId,
+          assignment: {
+            id: assignment.id,
+            title: assignment.title,
+            student_name: assignment.student_name,
+          },
+          overall_score: overallScore,
+          processed_at: processedAt,
+          matches,
+        }
+
+        assignment.plagiarism_results = [
+          { id: resultId, overall_score: overallScore, processed_at: processedAt },
+          ...(assignment.plagiarism_results || []),
+        ]
+
+        state.results = [createdResult, ...state.results]
+        return state
+      })
+      return createdResult
+    }
     const response = await apiClient("/api/check-plagiarism/", {
       method: "POST",
       body: JSON.stringify({
@@ -309,6 +553,10 @@ export const plagiarismAPI = {
   },
 
   getResults: async () => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      return state.results
+    }
     const response = await apiClient("/api/results/")
 
     if (!response.ok) {
@@ -319,6 +567,12 @@ export const plagiarismAPI = {
   },
 
   getResult: async (id: number) => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      const result = state.results.find((item) => item.id === id)
+      if (!result) throw new Error("Result not found")
+      return result
+    }
     const response = await apiClient(`/api/results/${id}/`)
 
     if (!response.ok) {
@@ -332,6 +586,10 @@ export const plagiarismAPI = {
 // Students API (teacher-only)
 export const studentsAPI = {
   getStudents: async () => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      return state.students
+    }
     const response = await apiClient("/api/students/")
 
     if (!response.ok) {
@@ -342,6 +600,22 @@ export const studentsAPI = {
   },
 
   getStudent: async (id: number) => {
+    if (DEMO_MODE) {
+      const state = getDemoState()
+      const student = state.students.find((item) => item.id === id)
+      if (!student) throw new Error("Student not found")
+
+      const studentAssignments = state.assignments.filter((assignment) => {
+        if (assignment.student_id && assignment.student_id === student.username) return true
+        const fullName = `${student.first_name} ${student.last_name}`.trim()
+        return fullName && assignment.student_name === fullName
+      })
+
+      return {
+        ...student,
+        assignments: studentAssignments,
+      }
+    }
     const response = await apiClient(`/api/students/${id}/`)
 
     if (!response.ok) {
@@ -352,6 +626,24 @@ export const studentsAPI = {
   },
 
   createStudent: async (studentData: any) => {
+    if (DEMO_MODE) {
+      let createdStudent: any = null
+      updateDemoState((state) => {
+        const id = nextId(state, "student")
+        createdStudent = {
+          id,
+          email: studentData?.email || `student${id}@demo.edu`,
+          username: studentData?.username || `student${id}`,
+          first_name: studentData?.first_name || "",
+          last_name: studentData?.last_name || "",
+          institution: studentData?.institution || "",
+          department: studentData?.department || "",
+        }
+        state.students = [createdStudent, ...state.students]
+        return state
+      })
+      return createdStudent
+    }
     const response = await apiClient("/api/students/", {
       method: "POST",
       body: JSON.stringify(studentData),
@@ -366,6 +658,20 @@ export const studentsAPI = {
   },
 
   updateStudent: async (id: number, studentData: any) => {
+    if (DEMO_MODE) {
+      let updatedStudent: any = null
+      updateDemoState((state) => {
+        const index = state.students.findIndex((item) => item.id === id)
+        if (index === -1) throw new Error("Student not found")
+        updatedStudent = {
+          ...state.students[index],
+          ...studentData,
+        }
+        state.students[index] = updatedStudent
+        return state
+      })
+      return updatedStudent
+    }
     const response = await apiClient(`/api/students/${id}/`, {
       method: "PATCH",
       body: JSON.stringify(studentData),
@@ -380,6 +686,13 @@ export const studentsAPI = {
   },
 
   deleteStudent: async (id: number) => {
+    if (DEMO_MODE) {
+      updateDemoState((state) => {
+        state.students = state.students.filter((student) => student.id !== id)
+        return state
+      })
+      return true
+    }
     const response = await apiClient(`/api/students/${id}/`, {
       method: "DELETE",
     })
@@ -392,6 +705,52 @@ export const studentsAPI = {
   },
 
   importStudentsCSV: async (file: File) => {
+    if (DEMO_MODE) {
+      const text = await file.text()
+      const rows = text.trim().split(/\r?\n/).filter(Boolean)
+      if (rows.length <= 1) {
+        return { created: [], errors: [{ row: 1, error: "No student rows found." }] }
+      }
+
+      const headers = rows[0].split(",").map((header) => header.trim().toLowerCase())
+      const created: any[] = []
+      const errors: any[] = []
+
+      updateDemoState((state) => {
+        rows.slice(1).forEach((row, index) => {
+          const columns = row.split(",").map((value) => value.trim())
+          const data: Record<string, string> = {}
+          headers.forEach((header, colIndex) => {
+            data[header] = columns[colIndex] || ""
+          })
+
+          if (!data.email || !data.username) {
+            errors.push({ row: index + 2, error: "Missing email or username." })
+            return
+          }
+
+          const id = nextId(state, "student")
+          const password = data.password || `Temp-${Math.random().toString(36).slice(2, 8)}`
+
+          const student = {
+            id,
+            email: data.email,
+            username: data.username,
+            first_name: data.first_name || "",
+            last_name: data.last_name || "",
+            institution: data.institution || "",
+            department: data.department || "",
+          }
+
+          state.students = [student, ...state.students]
+          created.push({ ...student, password })
+        })
+
+        return state
+      })
+
+      return { created, errors }
+    }
     const formData = new FormData()
     formData.append("file", file)
 

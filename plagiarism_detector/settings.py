@@ -16,7 +16,10 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-key-for-development-only')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,192.168.29.216').split(',')
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+
+# SECURE_PROXY_SSL_HEADER is required for Render/Load Balancers
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Application definition
 INSTALLED_APPS = [
@@ -135,10 +138,12 @@ SIMPLE_JWT = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = os.getenv(
-    'CORS_ALLOWED_ORIGINS',
-    'http://localhost:3000,http://127.0.0.1:3000,http://192.168.29.216:3000'
-).split(',')
+CORS_ALLOWED_ORIGINS = [
+    origin for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:3000,http://127.0.0.1:3000'
+    ).split(',') if origin
+]
 CORS_ALLOW_CREDENTIALS = True
 
 csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', '')
